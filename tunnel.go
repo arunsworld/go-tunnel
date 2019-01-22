@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"errors"
 	"io"
 	"io/ioutil"
 	"log"
@@ -16,6 +17,7 @@ type Spec struct {
 	User    string
 	Auth    []ssh.AuthMethod
 	Forward []Forwarder
+	Logger  Logger
 }
 
 // Forwarder defines a port forward definition
@@ -24,19 +26,51 @@ type Forwarder struct {
 	destination string
 }
 
+// Logger performs logging
+type Logger interface {
+	Log(format string, v ...interface{})
+}
+
+type emptyLogger struct{}
+
+func (l *emptyLogger) Log(format string, v ...interface{}) {}
+
+type stdoutLogger struct{}
+
+func (l *stdoutLogger) Log(format string, v ...interface{}) {
+	log.Printf(format, v...)
+}
+
+// EmptyLogger returns a logger that does nothing
+func EmptyLogger() Logger {
+	return &emptyLogger{}
+}
+
+// StdOutLogger returns a logger that prints to stdout
+func StdOutLogger() Logger {
+	return &stdoutLogger{}
+}
+
 // Execute executes the ssh connection & creation of the required tunnel
 func Execute(spec *Spec) error {
+	if spec.Logger == nil {
+		spec.Logger = EmptyLogger()
+	}
 	config := getSSHConfig(spec)
 	serverConnection, err := makeServerConnection(spec, config)
 	if err != nil {
 		return err
 	}
 	for _, f := range spec.Forward {
-		localConnection := listenLocally(f.port)
-		if localConnection == nil {
+		if !isDestinationAvailable(serverConnection, f.destination) {
+			spec.Logger.Log("%s is not available. Not bothering with tunnel.", f.destination)
 			continue
 		}
-		go forwardConnection(localConnection, serverConnection, f)
+		localListener := listenLocally(f.port, spec.Logger)
+		if localListener == nil {
+			continue
+		}
+		go acceptNewConnectionAndTunnel(localListener, serverConnection, f, spec.Logger)
 	}
 	return nil
 }
@@ -63,40 +97,49 @@ func Forward(port int, destination string) Forwarder {
 	}
 }
 
-func listenLocally(port int) net.Listener {
+func listenLocally(port int, logger Logger) net.Listener {
 	conn, err := net.Listen("tcp", "localhost:"+strconv.Itoa(port))
 	if err != nil {
-		log.Printf("Unable to bind to local port: %d\n", port)
+		logger.Log("Unable to bind to local port: %d\n", port)
 		return nil
 	}
 	return conn
 }
 
-func forwardConnection(localConnection net.Listener, serverConnection *ssh.Client, forwarder Forwarder) {
-	defer localConnection.Close()
+func isDestinationAvailable(serverConnection *ssh.Client, destination string) bool {
+	conn, err := serverConnection.Dial("tcp", destination)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+func acceptNewConnectionAndTunnel(localListener net.Listener, serverConnection *ssh.Client, forwarder Forwarder, logger Logger) {
+	defer localListener.Close()
 
 	for {
-		conn, err := localConnection.Accept()
+		conn, err := localListener.Accept()
 		if err != nil {
-			log.Printf("Could not accept new connection on port %d: %s\n", forwarder.port, err.Error())
+			logger.Log("Could not accept new connection on port %d: %s\n", forwarder.port, err.Error())
 			return
 		}
-		log.Printf("Connection accepted on port: %d\n", forwarder.port)
-		tunnel(serverConnection, conn, forwarder.destination)
+		logger.Log("Connection accepted on port: %d\n", forwarder.port)
+		go tunnel(serverConnection, conn, forwarder.destination, logger)
 	}
 }
 
-func tunnel(serverConnection *ssh.Client, localConnection net.Conn, destination string) {
+func tunnel(serverConnection *ssh.Client, localConnection net.Conn, destination string, logger Logger) {
 	remoteConnection, err := serverConnection.Dial("tcp", destination)
 	if err != nil {
-		log.Printf("Unable to connect to remote destination %s: %s\n", destination, err.Error())
+		logger.Log("Unable to connect to remote destination %s: %s\n", destination, err.Error())
 		return
 	}
 
 	copyConn := func(writer, reader net.Conn) {
 		_, err := io.Copy(writer, reader)
 		if err != nil {
-			log.Println("io.Copy error:", err)
+			logger.Log("io.Copy error:", err)
 		}
 	}
 
@@ -105,18 +148,16 @@ func tunnel(serverConnection *ssh.Client, localConnection net.Conn, destination 
 }
 
 // PrivateKeyFile reads a private key and returns an AuthMethod using it
-func PrivateKeyFile(file string, passPhrase string) ssh.AuthMethod {
+func PrivateKeyFile(file string, passPhrase string) (ssh.AuthMethod, error) {
 	buffer, err := ioutil.ReadFile(file)
 	if err != nil {
-		log.Println("Couldn't read private key:", err)
-		return nil
+		return nil, errors.New("Couldn't read private key:" + err.Error())
 	}
 
 	key, err := ssh.ParsePrivateKeyWithPassphrase(buffer, []byte(passPhrase))
 	if err != nil {
-		log.Println("Couldn't parse private key:", err)
-		return nil
+		return nil, errors.New("Couldn't parse private key:" + err.Error())
 	}
 
-	return ssh.PublicKeys(key)
+	return ssh.PublicKeys(key), nil
 }
