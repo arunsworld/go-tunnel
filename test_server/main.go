@@ -43,7 +43,7 @@ func main() {
 	}
 
 	server := ssh.Server{
-		Addr: ":2222",
+		Addr: ":2229",
 		Handler: ssh.Handler(func(s ssh.Session) {
 			io.WriteString(s, "hello, world\n")
 		}),

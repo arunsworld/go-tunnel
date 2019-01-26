@@ -133,6 +133,7 @@ func tunnel(serverConnection *ssh.Client, localConnection net.Conn, destination 
 	remoteConnection, err := serverConnection.Dial("tcp", destination)
 	if err != nil {
 		logger.Log("Unable to connect to remote destination %s: %s\n", destination, err.Error())
+		localConnection.Close()
 		return
 	}
 

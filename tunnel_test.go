@@ -10,8 +10,8 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func port222Open() bool {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort("", "2222"), time.Millisecond*200)
+func port2229Open() bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("", "2229"), time.Millisecond*200)
 	if err != nil {
 		return false
 	}
@@ -20,12 +20,12 @@ func port222Open() bool {
 }
 
 func TestSSHConnectionWithPassword(t *testing.T) {
-	if !port222Open() {
-		t.Fatal("Port 2222 not open. Please run test_server.")
+	if !port2229Open() {
+		t.Fatal("Port 2229 not open. Please run test_server.")
 	}
 
 	spec := &Spec{
-		Host: "localhost:2222",
+		Host: "localhost:2229",
 		User: "testuser",
 		Auth: []ssh.AuthMethod{
 			ssh.Password("the right password"),
@@ -38,8 +38,8 @@ func TestSSHConnectionWithPassword(t *testing.T) {
 }
 
 func TestSSHConnectionWithKey(t *testing.T) {
-	if !port222Open() {
-		t.Fatal("Port 2222 not open. Please run test_server.")
+	if !port2229Open() {
+		t.Fatal("Port 2229 not open. Please run test_server.")
 	}
 
 	key, err := PrivateKeyFile("test_server/id_rsa", "passphrase")
@@ -48,7 +48,7 @@ func TestSSHConnectionWithKey(t *testing.T) {
 	}
 
 	spec := &Spec{
-		Host: "localhost:2222",
+		Host: "localhost:2229",
 		User: "testuser",
 		Auth: []ssh.AuthMethod{
 			key,
@@ -61,18 +61,18 @@ func TestSSHConnectionWithKey(t *testing.T) {
 }
 
 func TestPortForward(t *testing.T) {
-	if !port222Open() {
-		t.Fatal("Port 2222 not open. Please run test_server.")
+	if !port2229Open() {
+		t.Fatal("Port 2229 not open. Please run test_server.")
 	}
 
 	spec := &Spec{
-		Host: "localhost:2222",
+		Host: "localhost:2229",
 		User: "testuser",
 		Auth: []ssh.AuthMethod{
 			ssh.Password("the right password"),
 		},
 		Forward: []Forwarder{
-			Forward(1234, "localhost:2222"),
+			Forward(1234, "localhost:2229"),
 		},
 	}
 
@@ -102,8 +102,8 @@ func TestPortForward(t *testing.T) {
 }
 
 func TestErrorCases(t *testing.T) {
-	if !port222Open() {
-		t.Fatal("Port 2222 not open. Please run test_server.")
+	if !port2229Open() {
+		t.Fatal("Port 2229 not open. Please run test_server.")
 	}
 
 	t.Run("Bad Spec", func(t *testing.T) {
@@ -116,13 +116,13 @@ func TestErrorCases(t *testing.T) {
 
 	t.Run("Bad Local Port during Forward", func(t *testing.T) {
 		spec := &Spec{
-			Host: "localhost:2222",
+			Host: "localhost:2229",
 			User: "testuser",
 			Auth: []ssh.AuthMethod{
 				ssh.Password("the right password"),
 			},
 			Forward: []Forwarder{
-				Forward(222222, "localhost:2223"),
+				Forward(222922, "localhost:2223"),
 			},
 		}
 
@@ -133,7 +133,7 @@ func TestErrorCases(t *testing.T) {
 
 	t.Run("Bad Destination during Forward", func(t *testing.T) {
 		spec := &Spec{
-			Host: "localhost:2222",
+			Host: "localhost:2229",
 			User: "testuser",
 			Auth: []ssh.AuthMethod{
 				ssh.Password("the right password"),
@@ -176,7 +176,7 @@ func TestErrorCases(t *testing.T) {
 
 		// Now portforward to port 6767
 		spec := &Spec{
-			Host: "localhost:2222",
+			Host: "localhost:2229",
 			User: "testuser",
 			Auth: []ssh.AuthMethod{
 				ssh.Password("the right password"),
