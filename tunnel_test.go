@@ -126,8 +126,9 @@ func TestErrorCases(t *testing.T) {
 			},
 		}
 
-		if err := Execute(spec); err != nil {
-			t.Fatal(err)
+		err := Execute(spec)
+		if err == nil {
+			t.Fatal("Expected an error but didn't get it!")
 		}
 	})
 
@@ -143,11 +144,12 @@ func TestErrorCases(t *testing.T) {
 			},
 		}
 
-		if err := Execute(spec); err != nil {
-			t.Fatal(err)
+		err := Execute(spec)
+		if err == nil {
+			t.Fatal("Expected an error but didn't get it!")
 		}
 
-		_, err := net.DialTimeout("tcp", net.JoinHostPort("", "1235"), time.Millisecond*200)
+		_, err = net.DialTimeout("tcp", net.JoinHostPort("", "1235"), time.Millisecond*200)
 		if err == nil {
 			t.Fatal("Expected not to be able to connect to 1235 port but did!")
 		}

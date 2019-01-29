@@ -7,17 +7,20 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
 
 // Spec defines the ssh tunnel specifications
 type Spec struct {
-	Host    string
-	User    string
-	Auth    []ssh.AuthMethod
-	Forward []Forwarder
-	Logger  Logger
+	Host           string
+	User           string
+	Auth           []ssh.AuthMethod
+	Forward        []Forwarder
+	Logger         Logger
+	ForwardTimeout time.Duration
+	Die            chan struct{}
 }
 
 // Forwarder defines a port forward definition
@@ -61,18 +64,46 @@ func Execute(spec *Spec) error {
 	if err != nil {
 		return err
 	}
+	timeout := time.Second * 5
+	if spec.ForwardTimeout > 0 {
+		timeout = spec.ForwardTimeout
+	}
 	for _, f := range spec.Forward {
-		if !isDestinationAvailable(serverConnection, f.destination) {
+		if !isDestinationAvailable(serverConnection, f.destination, timeout) {
 			spec.Logger.Log("%s is not available. Not bothering with tunnel.", f.destination)
-			continue
+			serverConnection.Close()
+			return errors.New("destination not available... closing down")
 		}
 		localListener := listenLocally(f.port, spec.Logger)
 		if localListener == nil {
-			continue
+			serverConnection.Close()
+			return errors.New("could not open local port... closing down")
 		}
 		go acceptNewConnectionAndTunnel(localListener, serverConnection, f, spec.Logger)
 	}
+	go monitorOrDie(serverConnection, spec)
 	return nil
+}
+
+func monitorOrDie(serverConnection *ssh.Client, spec *Spec) {
+	timeout := time.Second * 5
+	if spec.ForwardTimeout > 0 {
+		timeout = spec.ForwardTimeout
+	}
+	for {
+		for _, f := range spec.Forward {
+			if !isDestinationAvailable(serverConnection, f.destination, timeout) {
+				spec.Logger.Log("%s is unreachable. Dying.", f.destination)
+				serverConnection.Close()
+				if spec.Die != nil {
+					spec.Die <- struct{}{}
+				}
+				return
+			}
+		}
+		// spec.Logger.Log("All good within connection: %s", spec.Host)
+		time.Sleep(time.Second * 10)
+	}
 }
 
 func getSSHConfig(spec *Spec) *ssh.ClientConfig {
@@ -106,13 +137,24 @@ func listenLocally(port int, logger Logger) net.Listener {
 	return conn
 }
 
-func isDestinationAvailable(serverConnection *ssh.Client, destination string) bool {
-	conn, err := serverConnection.Dial("tcp", destination)
-	if err != nil {
+func isDestinationAvailable(serverConnection *ssh.Client, destination string, timeout time.Duration) bool {
+	done := make(chan bool)
+	go func() {
+		conn, err := serverConnection.Dial("tcp", destination)
+		if err != nil {
+			done <- false
+			return
+		}
+		conn.Close()
+		done <- true
+	}()
+
+	select {
+	case status := <-done:
+		return status
+	case <-time.After(timeout):
 		return false
 	}
-	conn.Close()
-	return true
 }
 
 func acceptNewConnectionAndTunnel(localListener net.Listener, serverConnection *ssh.Client, forwarder Forwarder, logger Logger) {
