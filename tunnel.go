@@ -93,12 +93,12 @@ func monitorOrDie(serverConnection *ssh.Client, spec *Spec) {
 	for {
 		for _, f := range spec.Forward {
 			if !isDestinationAvailable(serverConnection, f.destination, timeout) {
-				spec.Logger.Log("%s is unreachable. Dying.", f.destination)
-				serverConnection.Close()
-				if spec.Die != nil {
-					spec.Die <- struct{}{}
-				}
-				return
+				spec.Logger.Log("%s is unreachable.", f.destination)
+				// serverConnection.Close()
+				// if spec.Die != nil {
+				// 	spec.Die <- struct{}{}
+				// }
+				// return
 			}
 		}
 		// spec.Logger.Log("All good within connection: %s", spec.Host)
