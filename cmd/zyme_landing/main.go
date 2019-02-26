@@ -95,6 +95,7 @@ func connectToTimeOperations(pwd ssh.AuthMethod, die chan struct{}) {
 		},
 		Forward: []tunnel.Forwarder{
 			tunnel.Forward(2222, "10.101.101.89:22"),
+			tunnel.Forward(2223, "10.107.107.188:22"),
 			tunnel.Forward(8088, "10.107.107.102:8088"),
 			tunnel.Forward(19888, "10.107.107.100:19888"),
 		},
@@ -106,6 +107,7 @@ func connectToTimeOperations(pwd ssh.AuthMethod, die chan struct{}) {
 	}
 	fmt.Println("Connection to time.operations.local successfully established...")
 	fmt.Printf("\tssh -i %s -p 2222 localhost  <-- to ssh to zyme front channel\n", keyLocation)
+	fmt.Printf("\tssh -p 2223 localhost  <-- to ssh to zlakes34\n")
 	fmt.Println("\thttp://localhost:19888/    <-- to access Hadoop Job History")
 	fmt.Println("\thttp://localhost:8088/cluster/apps/RUNNING    <-- to access Hadoop Running Jobs")
 }
