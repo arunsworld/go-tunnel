@@ -20,7 +20,6 @@ type Spec struct {
 	Forward        []Forwarder
 	Logger         Logger
 	ForwardTimeout time.Duration
-	Die            chan struct{}
 }
 
 // Forwarder defines a port forward definition
@@ -64,16 +63,10 @@ func Execute(spec *Spec) error {
 	if err != nil {
 		return err
 	}
-	timeout := time.Second * 5
-	if spec.ForwardTimeout > 0 {
-		timeout = spec.ForwardTimeout
+	if spec.ForwardTimeout == 0 {
+		spec.ForwardTimeout = time.Second * 5
 	}
 	for _, f := range spec.Forward {
-		if !isDestinationAvailable(serverConnection, f.destination, timeout) {
-			spec.Logger.Log("%s is not available. Not bothering with tunnel.", f.destination)
-			serverConnection.Close()
-			return errors.New("destination not available... closing down")
-		}
 		localListener := listenLocally(f.port, spec.Logger)
 		if localListener == nil {
 			serverConnection.Close()
@@ -81,27 +74,16 @@ func Execute(spec *Spec) error {
 		}
 		go acceptNewConnectionAndTunnel(localListener, serverConnection, f, spec.Logger)
 	}
-	go monitorOrDie(serverConnection, spec)
 	return nil
 }
 
-func monitorOrDie(serverConnection *ssh.Client, spec *Spec) {
-	timeout := time.Second * 5
-	if spec.ForwardTimeout > 0 {
-		timeout = spec.ForwardTimeout
-	}
+func monitor(serverConnection *ssh.Client, spec *Spec) {
 	for {
 		for _, f := range spec.Forward {
-			if !isDestinationAvailable(serverConnection, f.destination, timeout) {
+			if !isDestinationAvailable(serverConnection, f.destination, spec.ForwardTimeout) {
 				spec.Logger.Log("%s is unreachable.", f.destination)
-				// serverConnection.Close()
-				// if spec.Die != nil {
-				// 	spec.Die <- struct{}{}
-				// }
-				// return
 			}
 		}
-		// spec.Logger.Log("All good within connection: %s", spec.Host)
 		time.Sleep(time.Second * 10)
 	}
 }
@@ -113,6 +95,7 @@ func getSSHConfig(spec *Spec) *ssh.ClientConfig {
 		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 			return nil
 		},
+		Timeout: spec.ForwardTimeout,
 	}
 }
 
@@ -135,26 +118,6 @@ func listenLocally(port int, logger Logger) net.Listener {
 		return nil
 	}
 	return conn
-}
-
-func isDestinationAvailable(serverConnection *ssh.Client, destination string, timeout time.Duration) bool {
-	done := make(chan bool)
-	go func() {
-		conn, err := serverConnection.Dial("tcp", destination)
-		if err != nil {
-			done <- false
-			return
-		}
-		conn.Close()
-		done <- true
-	}()
-
-	select {
-	case status := <-done:
-		return status
-	case <-time.After(timeout):
-		return false
-	}
 }
 
 func acceptNewConnectionAndTunnel(localListener net.Listener, serverConnection *ssh.Client, forwarder Forwarder, logger Logger) {
@@ -203,4 +166,15 @@ func PrivateKeyFile(file string, passPhrase string) (ssh.AuthMethod, error) {
 	}
 
 	return ssh.PublicKeys(key), nil
+}
+
+// DEPRECATED - due to lack of timeout support on serverConnection.Dial
+func isDestinationAvailable(serverConnection *ssh.Client, destination string, timeout time.Duration) bool {
+	conn, err := serverConnection.Dial("tcp", destination)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	conn.Close()
+	return true
 }

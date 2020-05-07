@@ -18,8 +18,9 @@ func main() {
 	keyPwd := os.Getenv("PRIVATE_KEY_PWD")
 	e2openDevPwd := os.Getenv("E2OPEN_DEV_PWD")
 	zymePwd := os.Getenv("ZYME_PWD")
+	newOptimaPwd := os.Getenv("NEWOPTIMA_PWD")
 
-	if keyLocation == "" || keyPwd == "" || e2openDevPwd == "" || zymePwd == "" {
+	if keyLocation == "" || keyPwd == "" || e2openDevPwd == "" || zymePwd == "" || newOptimaPwd == "" {
 		log.Fatal("Required keys & passwords not found. Did you do source env.sh?")
 	}
 
@@ -27,27 +28,22 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	pwd := ssh.Password(e2openDevPwd)
-	pwd2 := ssh.Password(zymePwd)
 
-	ch1 := make(chan struct{})
-	connectToFrontChannel(key, pwd, ch1)
-	ch2 := make(chan struct{})
-	connectToDev1249(pwd, ch2)
-	ch3 := make(chan struct{})
-	connectToTimeOperations(pwd2, ch3)
-
-	select {
-	case <-ch1:
-		return
-	case <-ch2:
-		return
-	case <-ch3:
-		return
+	if err := connectToFrontChannel(key, ssh.Password(e2openDevPwd)); err != nil {
+		log.Fatal(err)
 	}
+	if err := connectToDev1249(ssh.Password(e2openDevPwd)); err != nil {
+		log.Fatal(err)
+	}
+	if err := connectToAppsOnNewOptima(ssh.Password(newOptimaPwd)); err != nil {
+		log.Println(err)
+	}
+
+	// wait forever
+	select {}
 }
 
-func connectToFrontChannel(key ssh.AuthMethod, pwd ssh.AuthMethod, die chan struct{}) {
+func connectToFrontChannel(key ssh.AuthMethod, pwd ssh.AuthMethod) error {
 	spec := &tunnel.Spec{
 		Host: "bastion1.e2open.net:2222",
 		User: "abarua",
@@ -59,15 +55,17 @@ func connectToFrontChannel(key ssh.AuthMethod, pwd ssh.AuthMethod, die chan stru
 			tunnel.Forward(1234, "dev1249.dev.e2open.com:22"),
 		},
 		Logger: tunnel.StdOutLogger(),
-		Die:    die,
 	}
 	if err := tunnel.Execute(spec); err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("could not connect to front channel: %v", err)
 	}
 	fmt.Println("Connection to bastion1.e2open.com successfully established...")
+	fmt.Println("Forwarded 1234 to dev1249...")
+	fmt.Printf("\tssh -p 1234 localhost  <-- to ssh to dev1249\n")
+	return nil
 }
 
-func connectToDev1249(pwd ssh.AuthMethod, die chan struct{}) {
+func connectToDev1249(pwd ssh.AuthMethod) error {
 	spec := &tunnel.Spec{
 		Host: "localhost:1234",
 		User: "abarua",
@@ -75,39 +73,40 @@ func connectToDev1249(pwd ssh.AuthMethod, die chan struct{}) {
 			pwd,
 		},
 		Forward: []tunnel.Forwarder{
-			tunnel.Forward(1235, "172.16.1.191:22"),
+			tunnel.Forward(1235, "172.16.1.191:22"), // ioccdm001.zymesolutions.local - current optima
+			tunnel.Forward(1236, "10.34.224.34:22"), // new optima
+			tunnel.Forward(1237, "172.16.2.120:22"), // tp devint box
 		},
 		Logger: tunnel.StdOutLogger(),
-		Die:    die,
 	}
 	if err := tunnel.Execute(spec); err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("could not connect to dev1249: %v", err)
 	}
 	fmt.Println("Connection to dev1249.dev.e2open.com successfully established...")
+	fmt.Println("Forwarded 1235 to 172.16.1.191, 1236 to 10.34.224.34, 1237 to 172.16.2.120...")
+	fmt.Printf("\tssh -p 1235 localhost  <-- to ssh to ioccdm001.zymesolutions.local\n")
+	fmt.Printf("\tssh -p 1236 localhost  <-- to ssh to new optima, awx\n")
+	fmt.Printf("\tssh -p 1237 localhost  <-- to ssh to tp devint\n")
+	return nil
 }
 
-func connectToTimeOperations(pwd ssh.AuthMethod, die chan struct{}) {
+func connectToAppsOnNewOptima(pwd ssh.AuthMethod) error {
 	spec := &tunnel.Spec{
-		Host: "localhost:1235",
+		Host: "localhost:1236",
 		User: "abarua",
 		Auth: []ssh.AuthMethod{
 			pwd,
 		},
 		Forward: []tunnel.Forwarder{
-			tunnel.Forward(2222, "10.101.101.89:22"),
-			tunnel.Forward(2223, "10.107.107.188:22"),
-			tunnel.Forward(8088, "10.107.107.102:8088"),
-			tunnel.Forward(19888, "10.107.107.100:19888"),
+			tunnel.Forward(9090, "localhost:9090"), // sca
 		},
 		Logger: tunnel.StdOutLogger(),
-		Die:    die,
 	}
 	if err := tunnel.Execute(spec); err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("could not connect to apps on new optima: %v", err)
 	}
-	fmt.Println("Connection to time.operations.local successfully established...")
-	fmt.Printf("\tssh -i %s -p 2222 localhost  <-- to ssh to zyme front channel\n", keyLocation)
-	fmt.Printf("\tssh -p 2223 localhost  <-- to ssh to zlakes34\n")
-	fmt.Println("\thttp://localhost:19888/    <-- to access Hadoop Job History")
-	fmt.Println("\thttp://localhost:8088/cluster/apps/RUNNING    <-- to access Hadoop Running Jobs")
+	fmt.Println("Connection to new optima (10.34.224.34) successfully established...")
+	fmt.Println("Forwarded 9090 to localhost:9090")
+	fmt.Printf("\thttp://localhost:9090/  <-- to access sca\n")
+	return nil
 }
