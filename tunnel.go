@@ -1,14 +1,17 @@
 package tunnel
 
 import (
+	"context"
 	"errors"
 	"io"
 	"io/ioutil"
 	"log"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
+	"github.com/arunsworld/nursery"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -72,7 +75,59 @@ func Execute(spec *Spec) error {
 			serverConnection.Close()
 			return errors.New("could not open local port... closing down")
 		}
-		go acceptNewConnectionAndTunnel(localListener, serverConnection, f, spec.Logger)
+		go acceptNewConnectionAndTunnel(context.Background(), localListener, serverConnection, f, spec.Logger, nil)
+	}
+	return nil
+}
+
+func ExecuteAndBlock(ctx context.Context, spec *Spec, ok chan<- struct{}) error {
+	if spec.Logger == nil {
+		spec.Logger = EmptyLogger()
+	}
+	config := getSSHConfig(spec)
+	serverConnection, err := makeServerConnection(spec, config)
+	if err != nil {
+		return err
+	}
+	if spec.ForwardTimeout == 0 {
+		spec.ForwardTimeout = time.Second * 5
+	}
+	localListeners := []net.Listener{}
+	wg := sync.WaitGroup{}
+	for _, f := range spec.Forward {
+		localListener := listenLocally(f.port, spec.Logger)
+		if localListener == nil {
+			serverConnection.Close()
+			return errors.New("could not open local port... closing down")
+		}
+		localListeners = append(localListeners, localListener)
+		go acceptNewConnectionAndTunnel(ctx, localListener, serverConnection, f, spec.Logger, &wg)
+	}
+	serverConnectionDone := make(chan struct{})
+	go func() {
+		serverConnection.Wait()
+		close(serverConnectionDone)
+	}()
+	close(ok)
+	select {
+	case <-ctx.Done():
+		spec.Logger.Log("connection to %s terminating due to context cancellation", spec.Host)
+		wg.Wait()
+		spec.Logger.Log("all tunnels for %s are closed", spec.Host)
+		for _, l := range localListeners {
+			l.Close()
+		}
+		spec.Logger.Log("all listeners for %s are closed", spec.Host)
+		serverConnection.Close()
+		serverConnection.Wait()
+	case <-serverConnectionDone:
+		spec.Logger.Log("%s terminated our connection", spec.Host)
+		wg.Wait()
+		spec.Logger.Log("all tunnels for %s are closed", spec.Host)
+		for _, l := range localListeners {
+			l.Close()
+		}
+		spec.Logger.Log("all listeners for %s are closed", spec.Host)
 	}
 	return nil
 }
@@ -120,37 +175,68 @@ func listenLocally(port int, logger Logger) net.Listener {
 	return conn
 }
 
-func acceptNewConnectionAndTunnel(localListener net.Listener, serverConnection *ssh.Client, forwarder Forwarder, logger Logger) {
+func acceptNewConnectionAndTunnel(ctx context.Context, localListener net.Listener, serverConnection *ssh.Client, forwarder Forwarder, logger Logger, wg *sync.WaitGroup) {
 	defer localListener.Close()
 
 	for {
 		conn, err := localListener.Accept()
 		if err != nil {
-			logger.Log("Could not accept new connection on port %d: %s\n", forwarder.port, err.Error())
+			select {
+			case <-ctx.Done():
+			default:
+				logger.Log("Unable to accept new connection on port %d: %s\n", forwarder.port, err.Error())
+			}
 			return
 		}
 		logger.Log("Connection accepted on port: %d\n", forwarder.port)
-		go tunnel(serverConnection, conn, forwarder.destination, logger)
+		go tunnel(ctx, serverConnection, conn, forwarder.destination, logger, wg)
 	}
 }
 
-func tunnel(serverConnection *ssh.Client, localConnection net.Conn, destination string, logger Logger) {
+func tunnel(ctx context.Context, serverConnection *ssh.Client, localConnection net.Conn, destination string, logger Logger, wg *sync.WaitGroup) {
 	remoteConnection, err := serverConnection.Dial("tcp", destination)
 	if err != nil {
 		logger.Log("Unable to connect to remote destination %s: %s\n", destination, err.Error())
 		localConnection.Close()
 		return
 	}
+	logger.Log("\ttunneled connection from %s to %s established", localConnection.LocalAddr().String(), destination)
 
-	copyConn := func(writer, reader net.Conn) {
-		_, err := io.Copy(writer, reader)
-		if err != nil {
-			logger.Log("io.Copy error:", err)
-		}
+	if wg != nil {
+		wg.Add(1)
 	}
+	localCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		<-localCtx.Done()
+		remoteConnection.Close()
+		localConnection.Close()
+	}()
 
-	go copyConn(localConnection, remoteConnection)
-	go copyConn(remoteConnection, localConnection)
+	nursery.RunConcurrently(
+		func(context.Context, chan error) {
+			n, err := io.Copy(localConnection, remoteConnection)
+			logger.Log("\t\tfinished copying %d bytes from %s to %s", n, destination, localConnection.LocalAddr().String())
+			if err != nil {
+				logger.Log("error copying data from %s to %s: %v", destination, localConnection.LocalAddr().String(), err)
+			}
+			remoteConnection.Close()
+			localConnection.Close()
+		},
+		func(context.Context, chan error) {
+			n, err := io.Copy(remoteConnection, localConnection)
+			logger.Log("\t\tfinished copying %d bytes from %s to %s", n, localConnection.LocalAddr().String(), destination)
+			if err != nil {
+				logger.Log("error copying data from %s to %s: %v", localConnection.LocalAddr().String(), destination, err)
+			}
+			remoteConnection.Close()
+			localConnection.Close()
+		},
+	)
+	logger.Log("\ttunneled connection from %s to %s terminated", localConnection.LocalAddr().String(), destination)
+	if wg != nil {
+		wg.Done()
+	}
 }
 
 // PrivateKeyFile reads a private key and returns an AuthMethod using it
@@ -160,12 +246,19 @@ func PrivateKeyFile(file string, passPhrase string) (ssh.AuthMethod, error) {
 		return nil, errors.New("Couldn't read private key:" + err.Error())
 	}
 
-	key, err := ssh.ParsePrivateKeyWithPassphrase(buffer, []byte(passPhrase))
-	if err != nil {
-		return nil, errors.New("Couldn't parse private key:" + err.Error())
+	if passPhrase == "" {
+		key, err := ssh.ParsePrivateKey(buffer)
+		if err != nil {
+			return nil, errors.New("Couldn't parse private key:" + err.Error())
+		}
+		return ssh.PublicKeys(key), nil
+	} else {
+		key, err := ssh.ParsePrivateKeyWithPassphrase(buffer, []byte(passPhrase))
+		if err != nil {
+			return nil, errors.New("Couldn't parse private key:" + err.Error())
+		}
+		return ssh.PublicKeys(key), nil
 	}
-
-	return ssh.PublicKeys(key), nil
 }
 
 // DEPRECATED - due to lack of timeout support on serverConnection.Dial

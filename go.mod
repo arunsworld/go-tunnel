@@ -1,9 +1,11 @@
 module github.com/arunsworld/go-tunnel
 
 require (
+	github.com/arunsworld/nursery v0.6.0
 	github.com/gliderlabs/ssh v0.3.3
-	golang.org/x/crypto v0.0.0-20220331220935-ae2d96664a29
-	golang.org/x/sys v0.0.0-20220405210540-1e041c57c461 // indirect
+	github.com/urfave/cli/v2 v2.25.3
+	golang.org/x/crypto v0.9.0
+	gopkg.in/yaml.v2 v2.4.0
 )
 
 go 1.13

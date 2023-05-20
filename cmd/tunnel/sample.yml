@@ -1,0 +1,25 @@
+- destination: destination:2222
+  user: username
+  auth:
+  - keyauth:
+      filelocation: /location/of/key/file
+      passwordenv: KEY_PWD
+  - pwdauth:
+      passwordenv: USER_PWD
+  tunnels:
+  - name: service a
+    port: 2000
+    target: servicea.target:8000
+  - name: box a
+    port: 2222
+    target: boxa.target:22
+  throughssh:
+  - destination: localhost:2222
+    user: username
+    auth:
+    - pwdauth:
+        passwordenv: USER_PWD
+    tunnels:
+    - name: service b
+      port: 2001
+      target: serviceb.boxa.target:8000
