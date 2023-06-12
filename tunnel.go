@@ -167,7 +167,7 @@ func Forward(port int, destination string) Forwarder {
 }
 
 func listenLocally(port int, logger Logger) net.Listener {
-	conn, err := net.Listen("tcp", "localhost:"+strconv.Itoa(port))
+	conn, err := net.Listen("tcp", ":"+strconv.Itoa(port))
 	if err != nil {
 		logger.Log("Unable to bind to local port: %d\n", port)
 		return nil
