@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"os/signal"
@@ -19,10 +20,15 @@ func main() {
 	flags, conf := flagsAndConfig()
 
 	app := &cli.App{
-		Name:  "ssh tunnel",
-		Usage: "tunnel ports through an ssh connection",
-		Flags: flags,
+		Name:      "ssh tunnel",
+		Usage:     "tunnel ports through an ssh connection",
+		UsageText: "tunnel [options] <config file>",
+		Flags:     flags,
 		Action: func(ctx *cli.Context) error {
+			if ctx.NArg() != 1 {
+				return errors.New("confg file not provided")
+			}
+			conf.configFile = ctx.Args().First()
 			return run(ctx.Context, conf)
 		},
 	}
@@ -37,12 +43,5 @@ func main() {
 
 func flagsAndConfig() ([]cli.Flag, *config) {
 	conf := config{}
-	return []cli.Flag{
-		&cli.StringFlag{
-			Name:        "config",
-			Aliases:     []string{"c"},
-			EnvVars:     []string{"SSH_TUNNEL_CONFIG"},
-			Destination: &conf.configFile,
-		},
-	}, &conf
+	return []cli.Flag{}, &conf
 }
