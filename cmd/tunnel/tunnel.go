@@ -71,11 +71,12 @@ func newSecretVault(s secret) (vaultSecret, error) {
 }
 
 type sshConfig struct {
-	Destination string
-	User        string
-	Auth        []auth
-	Tunnels     []portForward
-	ThroughSSH  []sshConfig
+	Destination    string
+	User           string
+	Auth           []auth
+	Tunnels        []portForward
+	ReverseTunnels []portForward
+	ThroughSSH     []sshConfig
 }
 
 func (sc *sshConfig) validateAndUpdateAuth(vault secretsVault) error {
@@ -170,7 +171,13 @@ func (sc *sshConfig) logSuccessful() {
 		if f.Ignore {
 			continue
 		}
-		log.Printf("\testablished tunnel %s: forwarded %d to %s", f.Name, f.Port, f.Target)
+		log.Printf("\testablished tunnel %s: forwarded port %d to %s", f.Name, f.Port, f.Target)
+	}
+	for _, f := range sc.ReverseTunnels {
+		if f.Ignore {
+			continue
+		}
+		log.Printf("\testablished tunnel %s: forwarded remote port %d to %s", f.Name, f.Port, f.Target)
 	}
 }
 
@@ -248,6 +255,12 @@ func handleConnectionTo(ctx context.Context, conf sshConfig) error {
 			continue
 		}
 		spec.Forward = append(spec.Forward, tunnel.Forward(f.Port, f.Target))
+	}
+	for _, f := range conf.ReverseTunnels {
+		if f.Ignore {
+			continue
+		}
+		spec.Reverse = append(spec.Reverse, tunnel.Forward(f.Port, f.Target))
 	}
 	ok := make(chan struct{})
 	finished := make(chan struct{})

@@ -21,6 +21,7 @@ type Spec struct {
 	User           string
 	Auth           []ssh.AuthMethod
 	Forward        []Forwarder
+	Reverse        []Forwarder
 	Logger         Logger
 	ForwardTimeout time.Duration
 }
@@ -66,11 +67,12 @@ func Execute(spec *Spec) error {
 	if err != nil {
 		return err
 	}
+	localConnection := localNetwork{}
 	if spec.ForwardTimeout == 0 {
 		spec.ForwardTimeout = time.Second * 5
 	}
 	for _, f := range spec.Forward {
-		localListener := listenLocally(f.port, spec.Logger)
+		localListener := listenOnNetworkingDevice(localConnection, f.port, spec.Logger)
 		if localListener == nil {
 			serverConnection.Close()
 			return errors.New("could not open local port... closing down")
@@ -89,19 +91,29 @@ func ExecuteAndBlock(ctx context.Context, spec *Spec, ok chan<- struct{}) error 
 	if err != nil {
 		return err
 	}
+	localConnection := localNetwork{}
 	if spec.ForwardTimeout == 0 {
 		spec.ForwardTimeout = time.Second * 5
 	}
 	localListeners := []net.Listener{}
 	wg := sync.WaitGroup{}
 	for _, f := range spec.Forward {
-		localListener := listenLocally(f.port, spec.Logger)
+		localListener := listenOnNetworkingDevice(localConnection, f.port, spec.Logger)
 		if localListener == nil {
 			serverConnection.Close()
 			return errors.New("could not open local port... closing down")
 		}
 		localListeners = append(localListeners, localListener)
 		go acceptNewConnectionAndTunnel(ctx, localListener, serverConnection, f, spec.Logger, &wg)
+	}
+	remoteListeners := []net.Listener{}
+	for _, f := range spec.Reverse {
+		remoteListener := listenOnNetworkingDevice(serverConnection, f.port, spec.Logger)
+		if remoteListener == nil {
+			continue
+		}
+		remoteListeners = append(remoteListeners, remoteListener)
+		go acceptNewConnectionAndTunnel(ctx, remoteListener, localConnection, f, spec.Logger, &wg)
 	}
 	serverConnectionDone := make(chan struct{})
 	go func() {
@@ -117,7 +129,11 @@ func ExecuteAndBlock(ctx context.Context, spec *Spec, ok chan<- struct{}) error 
 		for _, l := range localListeners {
 			l.Close()
 		}
-		spec.Logger.Log("all listeners for %s are closed", spec.Host)
+		spec.Logger.Log("all local listeners for %s are closed", spec.Host)
+		for _, l := range remoteListeners {
+			l.Close()
+		}
+		spec.Logger.Log("all remote listeners for %s are closed", spec.Host)
 		serverConnection.Close()
 		serverConnection.Wait()
 	case <-serverConnectionDone:
@@ -166,20 +182,35 @@ func Forward(port int, destination string) Forwarder {
 	}
 }
 
-func listenLocally(port int, logger Logger) net.Listener {
-	conn, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+type networkingDevice interface {
+	Listen(network, address string) (net.Listener, error)
+	Dial(n, addr string) (net.Conn, error)
+}
+
+type localNetwork struct{}
+
+func (localNetwork) Listen(network, address string) (net.Listener, error) {
+	return net.Listen(network, address)
+}
+
+func (localNetwork) Dial(n, addr string) (net.Conn, error) {
+	return net.Dial(n, addr)
+}
+
+func listenOnNetworkingDevice(n networkingDevice, port int, logger Logger) net.Listener {
+	conn, err := n.Listen("tcp", "localhost:"+strconv.Itoa(port))
 	if err != nil {
-		logger.Log("Unable to bind to local port: %d\n", port)
+		logger.Log("Unable to bind to remote port: %d\n", port)
 		return nil
 	}
 	return conn
 }
 
-func acceptNewConnectionAndTunnel(ctx context.Context, localListener net.Listener, serverConnection *ssh.Client, forwarder Forwarder, logger Logger, wg *sync.WaitGroup) {
-	defer localListener.Close()
+func acceptNewConnectionAndTunnel(ctx context.Context, listener net.Listener, destinationDevice networkingDevice, forwarder Forwarder, logger Logger, wg *sync.WaitGroup) {
+	defer listener.Close()
 
 	for {
-		conn, err := localListener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			select {
 			case <-ctx.Done():
@@ -189,12 +220,12 @@ func acceptNewConnectionAndTunnel(ctx context.Context, localListener net.Listene
 			return
 		}
 		logger.Log("Connection accepted on port: %d\n", forwarder.port)
-		go tunnel(ctx, serverConnection, conn, forwarder.destination, logger, wg)
+		go tunnel(ctx, destinationDevice, conn, forwarder.destination, logger, wg)
 	}
 }
 
-func tunnel(ctx context.Context, serverConnection *ssh.Client, localConnection net.Conn, destination string, logger Logger, wg *sync.WaitGroup) {
-	remoteConnection, err := serverConnection.Dial("tcp", destination)
+func tunnel(ctx context.Context, destinationDevice networkingDevice, localConnection net.Conn, destination string, logger Logger, wg *sync.WaitGroup) {
+	remoteConnection, err := destinationDevice.Dial("tcp", destination)
 	if err != nil {
 		logger.Log("Unable to connect to remote destination %s: %s\n", destination, err.Error())
 		localConnection.Close()
